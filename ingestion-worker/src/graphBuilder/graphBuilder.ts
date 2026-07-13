@@ -525,6 +525,11 @@ export class GraphBuilder {
         filePath: r.get('filePath'),
       }));
 
+      const issueFileRefs: { num: number; file: string; confidence: number; method: string }[] = [];
+      const issueFnRefs: { num: number; fnId: string; confidence: number; method: string }[] = [];
+      const prFileRefs: { num: number; file: string; confidence: number; method: string }[] = [];
+      const prFnRefs: { num: number; fnId: string; confidence: number; method: string }[] = [];
+
       // Scan issues
       for (const record of issuesResult.records) {
         const num = toSafeNumber(record.get('num'));
@@ -536,36 +541,15 @@ export class GraphBuilder {
         for (const file of files) {
           const basename = path.basename(file);
           if (text.includes(file)) {
-            // Full path match -> high confidence (1.0)
-            await session.run(
-              `MATCH (i:Issue { repo_id: $repoId, number: $num })
-               MATCH (f:File { repo_id: $repoId, path: $file })
-               MERGE (i)-[r:REFERENCES]->(f)
-               SET r.confidence = 1.0, r.extraction_method = 'explicit_path_mention'`,
-              { repoId, num, file }
-            );
+            issueFileRefs.push({ num, file, confidence: 1.0, method: 'explicit_path_mention' });
           } else if (text.includes(basename) && basename.length > 5) {
-            // Basename match -> medium confidence (0.6)
-            await session.run(
-              `MATCH (i:Issue { repo_id: $repoId, number: $num })
-               MATCH (f:File { repo_id: $repoId, path: $file })
-               MERGE (i)-[r:REFERENCES]->(f)
-               SET r.confidence = 0.6, r.extraction_method = 'basename_mention'`,
-              { repoId, num, file }
-            );
+            issueFileRefs.push({ num, file, confidence: 0.6, method: 'basename_mention' });
           }
         }
 
         for (const fn of functions) {
           if (fn.name !== 'anonymous' && fn.name.length > 4 && text.includes(`${fn.name}(`)) {
-            // Function call mention -> high confidence (0.8)
-            await session.run(
-              `MATCH (i:Issue { repo_id: $repoId, number: $num })
-               MATCH (f:Function { function_id: $fnId })
-               MERGE (i)-[r:REFERENCES]->(f)
-               SET r.confidence = 0.8, r.extraction_method = 'function_call_mention'`,
-              { repoId, num, fnId: fn.id }
-            );
+            issueFnRefs.push({ num, fnId: fn.id, confidence: 0.8, method: 'function_call_mention' });
           }
         }
       }
@@ -578,36 +562,67 @@ export class GraphBuilder {
         for (const file of files) {
           const basename = path.basename(file);
           if (text.includes(file)) {
-            await session.run(
-              `MATCH (p:PullRequest { repo_id: $repoId, number: $num })
-               MATCH (f:File { repo_id: $repoId, path: $file })
-               MERGE (p)-[r:REFERENCES]->(f)
-               SET r.confidence = 1.0, r.extraction_method = 'explicit_path_mention'`,
-              { repoId, num, file }
-            );
+            prFileRefs.push({ num, file, confidence: 1.0, method: 'explicit_path_mention' });
           } else if (text.includes(basename) && basename.length > 5) {
-            await session.run(
-              `MATCH (p:PullRequest { repo_id: $repoId, number: $num })
-               MATCH (f:File { repo_id: $repoId, path: $file })
-               MERGE (p)-[r:REFERENCES]->(f)
-               SET r.confidence = 0.6, r.extraction_method = 'basename_mention'`,
-              { repoId, num, file }
-            );
+            prFileRefs.push({ num, file, confidence: 0.6, method: 'basename_mention' });
           }
         }
 
         for (const fn of functions) {
           if (fn.name !== 'anonymous' && fn.name.length > 4 && text.includes(`${fn.name}(`)) {
-            await session.run(
-              `MATCH (p:PullRequest { repo_id: $repoId, number: $num })
-               MATCH (f:Function { function_id: $fnId })
-               MERGE (p)-[r:REFERENCES]->(f)
-               SET r.confidence = 0.8, r.extraction_method = 'function_call_mention'`,
-              { repoId, num, fnId: fn.id }
-            );
+            prFnRefs.push({ num, fnId: fn.id, confidence: 0.8, method: 'function_call_mention' });
           }
         }
       }
+
+      // Batch write issue file references
+      if (issueFileRefs.length > 0) {
+        await session.run(
+          `UNWIND $refs AS ref
+           MATCH (i:Issue { repo_id: $repoId, number: ref.num })
+           MATCH (f:File { repo_id: $repoId, path: ref.file })
+           MERGE (i)-[r:REFERENCES]->(f)
+           SET r.confidence = ref.confidence, r.extraction_method = ref.method`,
+          { repoId, refs: issueFileRefs }
+        );
+      }
+
+      // Batch write issue function references
+      if (issueFnRefs.length > 0) {
+        await session.run(
+          `UNWIND $refs AS ref
+           MATCH (i:Issue { repo_id: $repoId, number: ref.num })
+           MATCH (f:Function { function_id: ref.fnId })
+           MERGE (i)-[r:REFERENCES]->(f)
+           SET r.confidence = ref.confidence, r.extraction_method = ref.method`,
+          { repoId, refs: issueFnRefs }
+        );
+      }
+
+      // Batch write PR file references
+      if (prFileRefs.length > 0) {
+        await session.run(
+          `UNWIND $refs AS ref
+           MATCH (p:PullRequest { repo_id: $repoId, number: ref.num })
+           MATCH (f:File { repo_id: $repoId, path: ref.file })
+           MERGE (p)-[r:REFERENCES]->(f)
+           SET r.confidence = ref.confidence, r.extraction_method = ref.method`,
+          { repoId, refs: prFileRefs }
+        );
+      }
+
+      // Batch write PR function references
+      if (prFnRefs.length > 0) {
+        await session.run(
+          `UNWIND $refs AS ref
+           MATCH (p:PullRequest { repo_id: $repoId, number: ref.num })
+           MATCH (f:Function { function_id: ref.fnId })
+           MERGE (p)-[r:REFERENCES]->(f)
+           SET r.confidence = ref.confidence, r.extraction_method = ref.method`,
+          { repoId, refs: prFnRefs }
+        );
+      }
+
     } finally {
       await session.close();
     }
