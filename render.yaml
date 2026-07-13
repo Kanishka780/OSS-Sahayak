@@ -3,7 +3,7 @@ services:
     name: oss-sahayak-backend
     env: node
     plan: free
-    buildCommand: npm run build --workspace=backend
+    buildCommand: npm install --production=false && npm run build --workspace=backend
     startCommand: npm run start --workspace=backend
     envVars:
       - key: PORT
@@ -28,7 +28,7 @@ services:
   - type: web
     name: oss-sahayak-frontend
     env: static
-    buildCommand: npm run build --workspace=frontend
+    buildCommand: npm install --production=false && npm run build --workspace=frontend
     staticPublishPath: frontend/dist
     envVars:
       - key: VITE_API_BASE_URL
