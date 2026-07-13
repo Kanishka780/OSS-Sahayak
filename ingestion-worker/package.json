@@ -5,7 +5,8 @@
   "main": "src/workflows/ingestRepoWorkflow.ts",
   "scripts": {
     "dev": "ts-node src/workflows/ingestRepoWorkflow.ts",
-    "build": "tsc"
+    "build": "tsc",
+    "start": "node dist/ingestion-worker/src/workflows/ingestRepoWorkflow.js"
   },
   "dependencies": {
     "axios": "^1.7.9",
