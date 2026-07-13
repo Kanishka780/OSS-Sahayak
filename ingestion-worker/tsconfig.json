@@ -3,6 +3,10 @@
     "target": "ES2022",
     "module": "CommonJS",
     "moduleResolution": "node",
+    "baseUrl": ".",
+    "paths": {
+      "shared": ["../shared/types/index.ts"]
+    },
     "outDir": "./dist",
     "rootDir": "../",
     "strict": true,

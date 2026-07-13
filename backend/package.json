@@ -5,7 +5,8 @@
   "main": "src/server.ts",
   "scripts": {
     "dev": "ts-node src/server.ts",
-    "build": "tsc"
+    "build": "tsc",
+    "start": "node dist/backend/src/server.js"
   },
   "dependencies": {
     "@google/genai": "^2.11.0",
