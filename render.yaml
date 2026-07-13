@@ -3,7 +3,7 @@ services:
     name: oss-sahayak-backend
     env: node
     plan: free
-    buildCommand: npm run build
+    buildCommand: npm run build --workspace=backend
     startCommand: npm run start --workspace=backend
     envVars:
       - key: PORT
@@ -25,28 +25,10 @@ services:
       - key: APP_BASE_URL
         sync: false
 
-  - type: worker
-    name: oss-sahayak-worker
-    env: node
-    plan: free
-    buildCommand: npm run build
-    startCommand: npm run start --workspace=ingestion-worker
-    envVars:
-      - key: NODE_ENV
-        value: production
-      - key: NEO4J_URI
-        sync: false
-      - key: NEO4J_USERNAME
-        sync: false
-      - key: NEO4J_PASSWORD
-        sync: false
-      - key: GITHUB_TOKEN
-        sync: false
-
   - type: web
     name: oss-sahayak-frontend
     env: static
-    buildCommand: npm run build
+    buildCommand: npm run build --workspace=frontend
     staticPublishPath: frontend/dist
     envVars:
       - key: VITE_API_BASE_URL
