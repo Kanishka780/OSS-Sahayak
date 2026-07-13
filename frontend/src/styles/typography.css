@@ -1,0 +1,106 @@
+body {
+  background-color: var(--color-bg-base);
+  color: var(--color-text-primary);
+  font-family: var(--font-body);
+  font-size: var(--text-body);
+  line-height: var(--line-height-body);
+  margin: 0;
+  padding: 0;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-display);
+  font-weight: var(--weight-semibold);
+  margin: 0;
+}
+
+h1 {
+  font-size: var(--text-h1);
+  line-height: var(--line-height-heading);
+}
+
+h2 {
+  font-size: var(--text-h2);
+  line-height: var(--line-height-subheading);
+}
+
+code, pre, .mono {
+  font-family: var(--font-mono);
+  font-size: var(--text-mono);
+}
+
+a {
+  color: var(--color-accent-graph);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+input, button, select, textarea {
+  font-family: var(--font-body);
+  font-size: var(--text-body);
+}
+
+/* Card layout utility */
+.card {
+  background-color: var(--color-bg-surface);
+  border-radius: var(--radius-card);
+  padding: var(--space-16);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+/* Flex utilities */
+.flex {
+  display: flex;
+}
+
+.flex-col {
+  flex-direction: column;
+}
+
+.items-center {
+  align-items: center;
+}
+
+.justify-between {
+  justify-content: space-between;
+}
+
+.gap-8 {
+  gap: var(--space-8);
+}
+
+.gap-16 {
+  gap: var(--space-16);
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--color-bg-base);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-bg-surface);
+  border-radius: var(--radius-pill);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-text-secondary);
+}
+
+/* Nav Link Styling */
+.nav-link-active {
+  color: var(--color-accent-graph) !important;
+  border-bottom: 2px solid var(--color-accent-graph);
+  padding-bottom: 2px;
+}
+

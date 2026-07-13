@@ -1,0 +1,142 @@
+.graph-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.graph-title {
+  font-size: var(--text-h2);
+  color: var(--color-text-primary);
+}
+
+.graph-legend {
+  font-size: var(--text-caption);
+  color: var(--color-text-secondary);
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+}
+
+.legend-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.dot-file {
+  background-color: var(--color-bg-surface);
+  border: 1.5px solid var(--color-accent-graph);
+}
+
+.dot-func {
+  background-color: var(--color-bg-surface);
+  border: 1.5px solid var(--color-accent-evidence);
+}
+
+.dot-active {
+  background-color: var(--color-accent-graph);
+  box-shadow: 0 0 6px var(--color-accent-graph);
+}
+
+.graph-canvas-wrapper {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 350px;
+  background-color: var(--color-bg-base);
+  border-radius: var(--radius-card);
+  margin-top: var(--space-12);
+  border: 1px solid rgba(255, 255, 255, 0.02);
+  position: relative;
+  overflow: hidden;
+}
+
+.graph-empty {
+  color: var(--color-text-secondary);
+  opacity: 0.5;
+}
+
+.graph-canvas {
+  width: 100%;
+  max-width: 600px;
+  height: auto;
+}
+
+.graph-link {
+  stroke: rgba(255, 255, 255, 0.1);
+  stroke-width: 1.5px;
+  transition: stroke 0.3s ease, stroke-width 0.3s ease;
+}
+
+.link-highlighted {
+  stroke: var(--color-accent-graph);
+  stroke-width: 2.5px;
+  stroke-dasharray: 4;
+  animation: dash 10s linear infinite;
+}
+
+.graph-arrow {
+  fill: rgba(255, 255, 255, 0.1);
+  transition: fill 0.3s ease;
+}
+
+.arrow-highlighted {
+  fill: var(--color-accent-graph);
+}
+
+.graph-node {
+  fill: var(--color-bg-surface);
+  stroke-width: 2px;
+  transition: fill 0.3s ease, stroke 0.3s ease, r 0.3s ease, box-shadow 0.3s ease;
+}
+
+.node-file {
+  stroke: var(--color-accent-graph);
+}
+
+.node-func {
+  stroke: var(--color-accent-evidence);
+}
+
+.node-inactive {
+  opacity: 0.4;
+}
+
+.node-pending {
+  opacity: 0.7;
+}
+
+.node-active {
+  fill: var(--color-accent-graph);
+  stroke: var(--color-accent-graph);
+  opacity: 1;
+  r: 16;
+  filter: drop-shadow(0 0 6px var(--color-accent-graph));
+}
+
+.node-label {
+  fill: var(--color-text-secondary);
+  font-size: 11px;
+  opacity: 0.7;
+  pointer-events: none;
+}
+
+.label-active {
+  fill: var(--color-text-primary);
+  font-weight: var(--weight-semibold);
+  opacity: 1;
+}
+
+.node-group {
+  cursor: pointer;
+}
+
+@keyframes dash {
+  to {
+    stroke-dashoffset: -100;
+  }
+}
