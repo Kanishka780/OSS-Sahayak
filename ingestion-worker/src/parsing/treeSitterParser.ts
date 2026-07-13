@@ -63,128 +63,132 @@ export async function parseSourceFile(filePath: string, content: string): Promis
   if (!parserInstance) throw new Error('Parser not initialized');
 
   const tree = parserInstance.parse(content);
-  const root = tree.rootNode;
+  try {
+    const root = tree.rootNode;
 
-  const loc = content.split('\n').length;
-  const imports: ImportDetails[] = [];
-  
-  // Track functions and classes
-  const functions: ParsedFile['functions'] = [];
-  const classes: ParsedFile['classes'] = [];
+    const loc = content.split('\n').length;
+    const imports: ImportDetails[] = [];
+    
+    // Track functions and classes
+    const functions: ParsedFile['functions'] = [];
+    const classes: ParsedFile['classes'] = [];
 
-  // Recursive AST traversal
-  function visit(node: Parser.SyntaxNode, currentFunction: any = null) {
-    // 1. Extract Imports
-    if (node.type === 'import_statement') {
-      const sourceNode = node.childForFieldName('source');
-      const source = sourceNode ? sourceNode.text.replace(/['"]/g, '') : '';
-      
-      const specifiers: string[] = [];
-      // Look for named/default imports
-      const clause = node.childForFieldName('value') || node;
-      const namedImportsNode = clause.descendantsOfType('named_imports')[0];
-      if (namedImportsNode) {
-        for (let i = 0; i < namedImportsNode.namedChildCount; i++) {
-          specifiers.push(namedImportsNode.namedChild(i)!.text);
+    // Recursive AST traversal
+    function visit(node: Parser.SyntaxNode, currentFunction: any = null) {
+      // 1. Extract Imports
+      if (node.type === 'import_statement') {
+        const sourceNode = node.childForFieldName('source');
+        const source = sourceNode ? sourceNode.text.replace(/['"]/g, '') : '';
+        
+        const specifiers: string[] = [];
+        // Look for named/default imports
+        const clause = node.childForFieldName('value') || node;
+        const namedImportsNode = clause.descendantsOfType('named_imports')[0];
+        if (namedImportsNode) {
+          for (let i = 0; i < namedImportsNode.namedChildCount; i++) {
+            specifiers.push(namedImportsNode.namedChild(i)!.text);
+          }
+        } else {
+          // Check for default import
+          const identifierNode = clause.childForFieldName('name') || clause.descendantsOfType('identifier')[0];
+          if (identifierNode) {
+            specifiers.push(identifierNode.text);
+          }
         }
-      } else {
-        // Check for default import
-        const identifierNode = clause.childForFieldName('name') || clause.descendantsOfType('identifier')[0];
-        if (identifierNode) {
-          specifiers.push(identifierNode.text);
-        }
-      }
 
-      if (source) {
-        imports.push({ importPath: source, specifiers });
-      }
-    }
-
-    // 2. Extract Classes
-    if (node.type === 'class_declaration') {
-      const nameNode = node.childForFieldName('name');
-      const name = nameNode ? nameNode.text : 'AnonymousClass';
-      
-      // Check superclass (extends)
-      let superClass: string | undefined;
-      const heritage = node.descendantsOfType('class_heritage')[0];
-      if (heritage) {
-        const extendsExpr = heritage.descendantsOfType('extends_clause')[0] || heritage;
-        const valueNode = extendsExpr.namedChild(0);
-        if (valueNode) {
-          superClass = valueNode.text;
+        if (source) {
+          imports.push({ importPath: source, specifiers });
         }
       }
 
-      classes.push({
-        name,
-        superClass,
-        startLine: node.startPosition.row + 1,
-        endLine: node.endPosition.row + 1,
-      });
-    }
-
-    // 3. Extract Functions / Methods
-    let activeFunc = currentFunction;
-    const isFunction = 
-      node.type === 'function_declaration' || 
-      node.type === 'generator_function_declaration' ||
-      node.type === 'method_definition' ||
-      node.type === 'arrow_function';
-
-    if (isFunction) {
-      let funcName = 'anonymous';
-      if (node.type === 'function_declaration' || node.type === 'generator_function_declaration') {
+      // 2. Extract Classes
+      if (node.type === 'class_declaration') {
         const nameNode = node.childForFieldName('name');
-        if (nameNode) funcName = nameNode.text;
-      } else if (node.type === 'method_definition') {
-        const nameNode = node.childForFieldName('name');
-        if (nameNode) funcName = nameNode.text;
-      } else if (node.type === 'arrow_function') {
-        // Try to get parent variable declarator name
-        let parent = node.parent;
-        while (parent && parent.type !== 'variable_declarator' && parent.type !== 'lexical_declaration') {
-          parent = parent.parent;
+        const name = nameNode ? nameNode.text : 'AnonymousClass';
+        
+        // Check superclass (extends)
+        let superClass: string | undefined;
+        const heritage = node.descendantsOfType('class_heritage')[0];
+        if (heritage) {
+          const extendsExpr = heritage.descendantsOfType('extends_clause')[0] || heritage;
+          const valueNode = extendsExpr.namedChild(0);
+          if (valueNode) {
+            superClass = valueNode.text;
+          }
         }
-        if (parent && parent.type === 'variable_declarator') {
-          const nameNode = parent.childForFieldName('name');
-          if (nameNode) funcName = nameNode.text;
-        }
-      }
 
-      activeFunc = {
-        name: funcName,
-        startLine: node.startPosition.row + 1,
-        endLine: node.endPosition.row + 1,
-        calls: [] as CallDetails[],
-      };
-      functions.push(activeFunc);
-    }
-
-    // 4. Extract Call Expressions
-    if (node.type === 'call_expression' && activeFunc) {
-      const functionNode = node.childForFieldName('function');
-      if (functionNode) {
-        activeFunc.calls.push({
-          callee: functionNode.text,
-          line: node.startPosition.row + 1,
+        classes.push({
+          name,
+          superClass,
+          startLine: node.startPosition.row + 1,
+          endLine: node.endPosition.row + 1,
         });
       }
+
+      // 3. Extract Functions / Methods
+      let activeFunc = currentFunction;
+      const isFunction = 
+        node.type === 'function_declaration' || 
+        node.type === 'generator_function_declaration' ||
+        node.type === 'method_definition' ||
+        node.type === 'arrow_function';
+
+      if (isFunction) {
+        let funcName = 'anonymous';
+        if (node.type === 'function_declaration' || node.type === 'generator_function_declaration') {
+          const nameNode = node.childForFieldName('name');
+          if (nameNode) funcName = nameNode.text;
+        } else if (node.type === 'method_definition') {
+          const nameNode = node.childForFieldName('name');
+          if (nameNode) funcName = nameNode.text;
+        } else if (node.type === 'arrow_function') {
+          // Try to get parent variable declarator name
+          let parent = node.parent;
+          while (parent && parent.type !== 'variable_declarator' && parent.type !== 'lexical_declaration') {
+            parent = parent.parent;
+          }
+          if (parent && parent.type === 'variable_declarator') {
+            const nameNode = parent.childForFieldName('name');
+            if (nameNode) funcName = nameNode.text;
+          }
+        }
+
+        activeFunc = {
+          name: funcName,
+          startLine: node.startPosition.row + 1,
+          endLine: node.endPosition.row + 1,
+          calls: [] as CallDetails[],
+        };
+        functions.push(activeFunc);
+      }
+
+      // 4. Extract Call Expressions
+      if (node.type === 'call_expression' && activeFunc) {
+        const functionNode = node.childForFieldName('function');
+        if (functionNode) {
+          activeFunc.calls.push({
+            callee: functionNode.text,
+            line: node.startPosition.row + 1,
+          });
+        }
+      }
+
+      // Traverse children
+      for (let i = 0; i < node.namedChildCount; i++) {
+        visit(node.namedChild(i)!, activeFunc);
+      }
     }
 
-    // Traverse children
-    for (let i = 0; i < node.namedChildCount; i++) {
-      visit(node.namedChild(i)!, activeFunc);
-    }
+    visit(root);
+
+    return {
+      path: filePath,
+      loc,
+      imports,
+      functions,
+      classes,
+    };
+  } finally {
+    tree.delete();
   }
-
-  visit(root);
-
-  return {
-    path: filePath,
-    loc,
-    imports,
-    functions,
-    classes,
-  };
 }
