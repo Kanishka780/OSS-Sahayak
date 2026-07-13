@@ -93,57 +93,71 @@ export class GraphBuilder {
   async upsertFilesAndStructures(repoId: string, parsedFiles: ParsedFile[]): Promise<void> {
     const session = this.driver.session();
     try {
+      const files: { path: string; language: string; loc: number }[] = [];
+      const functions: { id: string; name: string; filePath: string; startLine: number; endLine: number }[] = [];
+      const classes: { id: string; name: string; filePath: string; startLine: number; endLine: number }[] = [];
+
       for (const file of parsedFiles) {
         const fileExt = path.extname(file.path).replace('.', '');
-        // 1. Merge File Node
-        await session.run(
-          `MERGE (f:File { repo_id: $repoId, path: $path })
-           SET f.language = $language,
-               f.loc = $loc`,
-          { repoId, path: file.path, language: fileExt, loc: file.loc }
-        );
+        files.push({ path: file.path, language: fileExt, loc: file.loc });
 
-        // 2. Merge Function Nodes
         for (const func of file.functions) {
           const functionId = `${repoId}::${file.path}::${func.name}::${func.startLine}`;
-          await session.run(
-            `MERGE (fn:Function { function_id: $functionId })
-             SET fn.repo_id = $repoId,
-                 fn.name = $name,
-                 fn.file_path = $filePath,
-                 fn.start_line = $startLine,
-                 fn.end_line = $endLine`,
-            {
-              functionId,
-              repoId,
-              name: func.name,
-              filePath: file.path,
-              startLine: func.startLine,
-              endLine: func.endLine,
-            }
-          );
+          functions.push({
+            id: functionId,
+            name: func.name,
+            filePath: file.path,
+            startLine: func.startLine,
+            endLine: func.endLine
+          });
         }
 
-        // 3. Merge Class Nodes
         for (const cls of file.classes) {
           const classId = `${repoId}::${file.path}::${cls.name}`;
-          await session.run(
-            `MERGE (c:Class { class_id: $classId })
-             SET c.repo_id = $repoId,
-                 c.name = $name,
-                 c.file_path = $filePath,
-                 c.start_line = $startLine,
-                 c.end_line = $endLine`,
-            {
-              classId,
-              repoId,
-              name: cls.name,
-              filePath: file.path,
-              startLine: cls.startLine,
-              endLine: cls.endLine,
-            }
-          );
+          classes.push({
+            id: classId,
+            name: cls.name,
+            filePath: file.path,
+            startLine: cls.startLine,
+            endLine: cls.endLine
+          });
         }
+      }
+
+      if (files.length > 0) {
+        await session.run(
+          `UNWIND $files AS file
+           MERGE (f:File { repo_id: $repoId, path: file.path })
+           SET f.language = file.language,
+               f.loc = file.loc`,
+          { repoId, files }
+        );
+      }
+
+      if (functions.length > 0) {
+        await session.run(
+          `UNWIND $funcs AS func
+           MERGE (fn:Function { function_id: func.id })
+           SET fn.repo_id = $repoId,
+               fn.name = func.name,
+               fn.file_path = func.filePath,
+               fn.start_line = func.startLine,
+               fn.end_line = func.endLine`,
+          { repoId, funcs: functions }
+        );
+      }
+
+      if (classes.length > 0) {
+        await session.run(
+          `UNWIND $classes AS cls
+           MERGE (c:Class { class_id: cls.id })
+           SET c.repo_id = $repoId,
+               c.name = cls.name,
+               c.file_path = cls.filePath,
+               c.start_line = cls.startLine,
+               c.end_line = cls.endLine`,
+          { repoId, classes }
+        );
       }
     } finally {
       await session.close();
@@ -155,19 +169,21 @@ export class GraphBuilder {
     const session = this.driver.session();
     let unresolvedCount = 0;
     try {
+      const internalImports: { fromPath: string; toPath: string; importPath: string }[] = [];
+      const externalDeps: { fromPath: string; placeholderPath: string; pkgName: string }[] = [];
+      const calls: { callerId: string; calleeId: string; line: number }[] = [];
+      const inherits: { classId: string; superId: string }[] = [];
+
       // 1. Resolve IMPORTS & DEPENDS_ON
       for (const file of parsedFiles) {
         for (const imp of file.imports) {
-          // Resolve relative path
           let resolvedPath = imp.importPath;
           let isInternal = false;
 
           if (imp.importPath.startsWith('.')) {
             isInternal = true;
-            // Clean import path
             const baseDir = path.dirname(file.path);
             let targetPath = path.normalize(path.join(baseDir, imp.importPath)).replace(/\\/g, '/');
-            // Try matching with common extensions
             const extensions = ['.ts', '.tsx', '.js', '.jsx', '/index.ts', '/index.js'];
             let matched = false;
             for (const ext of extensions) {
@@ -179,15 +195,9 @@ export class GraphBuilder {
               }
             }
             if (!matched) {
-              isInternal = false; // fallback to external representation if not found inside repo
+              isInternal = false;
             }
           } else if (imp.importPath.startsWith('@/')) {
-            // Common tsconfig/jsconfig path alias (Next.js/Vite convention), e.g.
-            // "@/components/Foo" typically maps to "src/components/Foo" or the repo
-            // root. Without resolving this, every aliased internal import gets
-            // misclassified as an external package literally named "@" — which
-            // both breaks real dependency traversal for the file doing the import
-            // AND pollutes the graph with a meaningless "package::@" node.
             const aliasedPath = imp.importPath.replace(/^@\//, '');
             const candidateRoots = ['src/', ''];
             const extensions = ['', '.ts', '.tsx', '.js', '.jsx', '/index.ts', '/index.tsx', '/index.js', '/index.jsx'];
@@ -202,39 +212,17 @@ export class GraphBuilder {
                 }
               }
             }
-            // If no match was found against actual ingested files, it falls through
-            // to the external-dependency branch below rather than being silently
-            // dropped — same safe fallback the relative-import branch already uses.
           }
 
           if (isInternal) {
-            await session.run(
-              `MATCH (a:File { repo_id: $repoId, path: $fromPath })
-               MATCH (b:File { repo_id: $repoId, path: $toPath })
-               MERGE (a)-[r:IMPORTS]->(b)
-               SET r.import_path = $importPath, r.resolved = true`,
-              { repoId, fromPath: file.path, toPath: resolvedPath, importPath: imp.importPath }
-            );
+            internalImports.push({ fromPath: file.path, toPath: resolvedPath, importPath: imp.importPath });
           } else {
-            // External dependency. Scoped npm packages (e.g. "@radix-ui/react-select")
-            // must keep their full "@scope/name" as the package identity — taking only
-            // the first path segment would truncate every scoped package down to just
-            // its scope (e.g. "@radix-ui"), silently merging many distinct packages
-            // into one node.
             const segments = imp.importPath.split('/');
             const pkgName = imp.importPath.startsWith('@') && segments.length > 1
               ? `${segments[0]}/${segments[1]}`
               : segments[0];
             const placeholderPath = `package::${pkgName}`;
-            await session.run(
-              `MERGE (b:File { repo_id: $repoId, path: $placeholderPath })
-               SET b:ExternalPackage, b.language = 'external', b.loc = 0
-               WITH b
-               MATCH (a:File { repo_id: $repoId, path: $fromPath })
-               MERGE (a)-[r:DEPENDS_ON]->(b)
-               SET r.via_package = $pkgName`,
-              { repoId, fromPath: file.path, placeholderPath, pkgName }
-            );
+            externalDeps.push({ fromPath: file.path, placeholderPath, pkgName });
           }
         }
       }
@@ -244,14 +232,11 @@ export class GraphBuilder {
         for (const func of file.functions) {
           const callerId = `${repoId}::${file.path}::${func.name}::${func.startLine}`;
           for (const call of func.calls) {
-            // Basic resolution:
-            // a. Check if function exists in the same file
             let calleeId = '';
             const localFunc = file.functions.find(f => f.name === call.callee);
             if (localFunc) {
               calleeId = `${repoId}::${file.path}::${localFunc.name}::${localFunc.startLine}`;
             } else {
-              // b. Check if function is imported from another file
               const matchingImport = file.imports.find(imp => imp.specifiers.includes(call.callee));
               if (matchingImport && matchingImport.importPath.startsWith('.')) {
                 const baseDir = path.dirname(file.path);
@@ -273,13 +258,7 @@ export class GraphBuilder {
             }
 
             if (calleeId) {
-              await session.run(
-                `MATCH (caller:Function { function_id: $callerId })
-                 MATCH (callee:Function { function_id: $calleeId })
-                 MERGE (caller)-[r:CALLS]->(callee)
-                 SET r.call_site_line = $line, r.resolved = true`,
-                { callerId, calleeId, line: call.line }
-              );
+              calls.push({ callerId, calleeId, line: call.line });
             } else {
               unresolvedCount++;
             }
@@ -292,13 +271,11 @@ export class GraphBuilder {
         for (const cls of file.classes) {
           if (cls.superClass) {
             const classId = `${repoId}::${file.path}::${cls.name}`;
-            // Try to find superclass in same file
             let superId = '';
             const localSuper = file.classes.find(c => c.name === cls.superClass);
             if (localSuper) {
               superId = `${repoId}::${file.path}::${localSuper.name}`;
             } else {
-              // Check imports
               const matchingImport = file.imports.find(imp => imp.specifiers.includes(cls.superClass!));
               if (matchingImport && matchingImport.importPath.startsWith('.')) {
                 const baseDir = path.dirname(file.path);
@@ -320,16 +297,61 @@ export class GraphBuilder {
             }
 
             if (superId) {
-              await session.run(
-                `MATCH (sub:Class { class_id: $classId })
-                 MATCH (super:Class { class_id: $superId })
-                 MERGE (sub)-[:INHERITS]->(super)`,
-                { classId, superId }
-              );
+              inherits.push({ classId, superId });
             }
           }
         }
       }
+
+      // Batch Write Internal Imports
+      if (internalImports.length > 0) {
+        await session.run(
+          `UNWIND $imports AS imp
+           MATCH (a:File { repo_id: $repoId, path: imp.fromPath })
+           MATCH (b:File { repo_id: $repoId, path: imp.toPath })
+           MERGE (a)-[r:IMPORTS]->(b)
+           SET r.import_path = imp.importPath, r.resolved = true`,
+          { repoId, imports: internalImports }
+        );
+      }
+
+      // Batch Write External Dependencies
+      if (externalDeps.length > 0) {
+        await session.run(
+          `UNWIND $deps AS dep
+           MERGE (b:File { repo_id: $repoId, path: dep.placeholderPath })
+           SET b:ExternalPackage, b.language = 'external', b.loc = 0
+           WITH b, dep
+           MATCH (a:File { repo_id: $repoId, path: dep.fromPath })
+           MERGE (a)-[r:DEPENDS_ON]->(b)
+           SET r.via_package = dep.pkgName`,
+          { repoId, deps: externalDeps }
+        );
+      }
+
+      // Batch Write Calls
+      if (calls.length > 0) {
+        await session.run(
+          `UNWIND $calls AS call
+           MATCH (caller:Function { function_id: call.callerId })
+           MATCH (callee:Function { function_id: call.calleeId })
+           MERGE (caller)-[r:CALLS]->(callee)
+           SET r.call_site_line = call.line, r.resolved = true`,
+          { calls }
+        );
+      }
+
+      // Batch Write Inherits
+      if (inherits.length > 0) {
+        await session.run(
+          `UNWIND $inherits AS inh
+           MATCH (sub:Class { class_id: inh.classId })
+           MATCH (super:Class { class_id: inh.superId })
+           MERGE (sub)-[:INHERITS]->(super)`,
+          { inherits }
+        );
+      }
+
     } finally {
       await session.close();
     }
@@ -346,162 +368,203 @@ export class GraphBuilder {
   ): Promise<void> {
     const session = this.driver.session();
     try {
-      // 1. Upsert Contributors & Commits
+      const contributorsMap = new Map<string, string>();
+      const commitRecords: { hash: string; message: string; timestamp: string; login: string }[] = [];
+      const modifiesRecords: { hash: string; path: string; additions: number; deletions: number }[] = [];
+      const prRecords: { number: number; title: string; body: string; state: string; createdAt: string; mergedAt: string | null; login: string }[] = [];
+      const prLinks: { number: number; prText: string; mergeText: string }[] = [];
+      const reviewRecords: { number: number; revLogin: string; state: string }[] = [];
+      const issueRecords: { number: number; title: string; body: string; labels: string[]; state: string; createdAt: string }[] = [];
+      const resolveLinks: { number: number; fixesPattern: string; closesPattern: string; resolvesPattern: string }[] = [];
+
+      // 1. Process Contributors & Commits
       for (const c of commits) {
         const login = c.author?.login || 'unknown-contributor';
         const name = c.commit?.author?.name || 'Unknown Contributor';
-        
-        await session.run(
-          `MERGE (u:Contributor { github_login: $login })
-           SET u.display_name = $name`,
-          { login, name }
-        );
+        contributorsMap.set(login, name);
 
-        await session.run(
-          `MERGE (cm:Commit { repo_id: $repoId, hash: $hash })
-           SET cm.message = $message,
-               cm.timestamp = datetime($timestamp)`,
-          {
-            repoId,
-            hash: c.sha,
-            message: c.commit.message || '',
-            timestamp: c.commit.author?.date || new Date().toISOString(),
-          }
-        );
+        commitRecords.push({
+          hash: c.sha,
+          message: c.commit.message || '',
+          timestamp: c.commit.author?.date || new Date().toISOString(),
+          login
+        });
 
-        await session.run(
-          `MATCH (cm:Commit { repo_id: $repoId, hash: $hash })
-           MATCH (u:Contributor { github_login: $login })
-           MERGE (cm)-[:AUTHORED_BY]->(u)`,
-          { repoId, hash: c.sha, login }
-        );
-
-        // Link Commit -> Files Modified
         if (c.files) {
           for (const file of c.files) {
-            await session.run(
-              `MATCH (f:File { repo_id: $repoId, path: $path })
-               MATCH (cm:Commit { repo_id: $repoId, hash: $hash })
-               MERGE (cm)-[r:MODIFIES]->(f)
-               SET r.additions = $additions,
-                   r.deletions = $deletions`,
-              {
-                repoId,
-                path: file.filename,
-                hash: c.sha,
-                additions: file.additions,
-                deletions: file.deletions,
-              }
-            );
+            modifiesRecords.push({
+              hash: c.sha,
+              path: file.filename,
+              additions: file.additions,
+              deletions: file.deletions
+            });
           }
         }
       }
 
-      // 2. Upsert Pull Requests and Link to Commits
+      // 2. Process Pull Requests
       for (const pr of prs) {
         const login = pr.user?.login || 'unknown-contributor';
-        await session.run(
-          `MERGE (u:Contributor { github_login: $login })
-           SET u.display_name = $login`,
-          { login }
-        );
+        contributorsMap.set(login, login);
 
         const prState = pr.state === 'closed' && pr.merged_at ? 'merged' : pr.state;
-        await session.run(
-          `MERGE (p:PullRequest { repo_id: $repoId, number: $number })
-           SET p.title = $title,
-               p.body = $body,
-               p.state = $state,
-               p.created_at = datetime($createdAt),
-               p.merged_at = case when $mergedAt IS NOT NULL then datetime($mergedAt) else null end`,
-          {
-            repoId,
-            number: pr.number,
-            title: pr.title || '',
-            body: pr.body || '',
-            state: prState,
-            createdAt: pr.created_at,
-            mergedAt: pr.merged_at,
-          }
-        );
+        prRecords.push({
+          number: pr.number,
+          title: pr.title || '',
+          body: pr.body || '',
+          state: prState,
+          createdAt: pr.created_at,
+          mergedAt: pr.merged_at || null,
+          login
+        });
 
-        // Try to link commits in this repository to the PR (if commits mention PR number, or if we map them)
-        // Since we are fetching via GitHub, we can link commits whose messages mention "pull request #N" or simply link them in order.
-        // For the graph builder, we can link commits to their PRs if we scan commit messages for PR mentions or if we fetch via Github PR commits endpoint.
-        // A simple heuristic for graph construction:
-        await session.run(
-          `MATCH (cm:Commit { repo_id: $repoId })
-           WHERE cm.message CONTAINS $prText OR cm.message CONTAINS $mergeText
-           MATCH (p:PullRequest { repo_id: $repoId, number: $number })
-           MERGE (cm)-[:PART_OF]->(p)`,
-          {
-            repoId,
-            number: pr.number,
-            prText: `(#${pr.number})`,
-            mergeText: `Merge pull request #${pr.number}`,
-          }
-        );
+        prLinks.push({
+          number: pr.number,
+          prText: `(#${pr.number})`,
+          mergeText: `Merge pull request #${pr.number}`
+        });
 
-        // 3. PR Reviews -> REVIEWED_BY
         const reviews = reviewsMap[pr.number] || [];
         for (const rev of reviews) {
           const revLogin = rev.user?.login || 'unknown-contributor';
-          await session.run(
-            `MERGE (u:Contributor { github_login: $revLogin })`,
-            { revLogin }
-          );
-
-          await session.run(
-            `MATCH (p:PullRequest { repo_id: $repoId, number: $number })
-             MATCH (u:Contributor { github_login: $revLogin })
-             MERGE (p)-[r:REVIEWED_BY]->(u)
-             ON CREATE SET r.comment_count = 1, r.review_state = $state
-             ON MATCH SET r.comment_count = r.comment_count + 1, r.review_state = $state`,
-            { repoId, number: pr.number, revLogin, state: rev.state }
-          );
+          contributorsMap.set(revLogin, revLogin);
+          reviewRecords.push({
+            number: pr.number,
+            revLogin,
+            state: rev.state
+          });
         }
       }
 
-      // 4. Upsert Issues and Link to PRs (RESOLVES)
+      // 3. Process Issues
       for (const issue of issues) {
         const labelsList = issue.labels.map(l => l.name);
-        await session.run(
-          `MERGE (i:Issue { repo_id: $repoId, number: $number })
-           SET i.title = $title,
-               i.body = $body,
-               i.labels = $labels,
-               i.state = $state,
-               i.created_at = datetime($createdAt)`,
-          {
-            repoId,
-            number: issue.number,
-            title: issue.title || '',
-            body: issue.body || '',
-            labels: labelsList,
-            state: issue.state,
-            createdAt: issue.created_at,
-          }
-        );
+        issueRecords.push({
+          number: issue.number,
+          title: issue.title || '',
+          body: issue.body || '',
+          labels: labelsList,
+          state: issue.state,
+          createdAt: issue.created_at
+        });
 
-        // Check if any PR resolves this issue by looking at PR titles/bodies for closing keywords:
-        // "fixes #N", "resolves #N", "closes #N"
+        resolveLinks.push({
+          number: issue.number,
+          fixesPattern: `fixes #${issue.number}`,
+          closesPattern: `closes #${issue.number}`,
+          resolvesPattern: `resolves #${issue.number}`
+        });
+      }
+
+      // Write unique Contributors
+      const uniqueContributors = Array.from(contributorsMap.entries()).map(([login, name]) => ({ login, name }));
+      if (uniqueContributors.length > 0) {
         await session.run(
-          `MATCH (p:PullRequest { repo_id: $repoId })
-           WHERE p.body CONTAINS $fixesPattern 
-              OR p.body CONTAINS $closesPattern 
-              OR p.body CONTAINS $resolvesPattern
-              OR p.title CONTAINS $fixesPattern
-           MATCH (i:Issue { repo_id: $repoId, number: $number })
-           MERGE (p)-[:RESOLVES]->(i)`,
-          {
-            repoId,
-            number: issue.number,
-            fixesPattern: `fixes #${issue.number}`,
-            closesPattern: `closes #${issue.number}`,
-            resolvesPattern: `resolves #${issue.number}`,
-          }
+          `UNWIND $contributors AS u
+           MERGE (contrib:Contributor { github_login: u.login })
+           SET contrib.display_name = u.name`,
+          { contributors: uniqueContributors }
         );
       }
+
+      // Write Commits
+      if (commitRecords.length > 0) {
+        await session.run(
+          `UNWIND $commits AS c
+           MERGE (cm:Commit { repo_id: $repoId, hash: c.hash })
+           SET cm.message = c.message,
+               cm.timestamp = datetime(c.timestamp)
+           WITH cm, c
+           MATCH (u:Contributor { github_login: c.login })
+           MERGE (cm)-[:AUTHORED_BY]->(u)`,
+          { repoId, commits: commitRecords }
+        );
+      }
+
+      // Link Commit -> Files Modified
+      if (modifiesRecords.length > 0) {
+        await session.run(
+          `UNWIND $modifies AS mod
+           MATCH (f:File { repo_id: $repoId, path: mod.path })
+           MATCH (cm:Commit { repo_id: $repoId, hash: mod.hash })
+           MERGE (cm)-[r:MODIFIES]->(f)
+           SET r.additions = mod.additions,
+               r.deletions = mod.deletions`,
+          { repoId, modifies: modifiesRecords }
+        );
+      }
+
+      // Write Pull Requests
+      if (prRecords.length > 0) {
+        await session.run(
+          `UNWIND $prs AS pr
+           MERGE (p:PullRequest { repo_id: $repoId, number: pr.number })
+           SET p.title = pr.title,
+               p.body = pr.body,
+               p.state = pr.state,
+               p.created_at = datetime(pr.createdAt),
+               p.merged_at = case when pr.mergedAt IS NOT NULL then datetime(pr.mergedAt) else null end
+           WITH p, pr
+           MATCH (u:Contributor { github_login: pr.login })
+           MERGE (p)-[:AUTHORED_BY]->(u)`,
+          { repoId, prs: prRecords }
+        );
+      }
+
+      // Link Commits to Pull Requests
+      if (prLinks.length > 0) {
+        await session.run(
+          `UNWIND $links AS link
+           MATCH (cm:Commit { repo_id: $repoId })
+             WHERE cm.message CONTAINS link.prText OR cm.message CONTAINS link.mergeText
+           MATCH (p:PullRequest { repo_id: $repoId, number: link.number })
+           MERGE (cm)-[:PART_OF]->(p)`,
+          { repoId, links: prLinks }
+        );
+      }
+
+      // Write PR Reviews
+      if (reviewRecords.length > 0) {
+        await session.run(
+          `UNWIND $reviews AS rev
+           MATCH (p:PullRequest { repo_id: $repoId, number: rev.number })
+           MATCH (u:Contributor { github_login: rev.revLogin })
+           MERGE (p)-[r:REVIEWED_BY]->(u)
+           ON CREATE SET r.comment_count = 1, r.review_state = rev.state
+           ON MATCH SET r.comment_count = r.comment_count + 1, r.review_state = rev.state`,
+          { repoId, reviews: reviewRecords }
+        );
+      }
+
+      // Write Issues
+      if (issueRecords.length > 0) {
+        await session.run(
+          `UNWIND $issues AS issue
+           MERGE (i:Issue { repo_id: $repoId, number: issue.number })
+           SET i.title = issue.title,
+               i.body = issue.body,
+               i.labels = issue.labels,
+               i.state = issue.state,
+               i.created_at = datetime(issue.createdAt)`,
+          { repoId, issues: issueRecords }
+        );
+      }
+
+      // Link Issues to PRs (RESOLVES)
+      if (resolveLinks.length > 0) {
+        await session.run(
+          `UNWIND $links AS link
+           MATCH (p:PullRequest { repo_id: $repoId })
+             WHERE p.body CONTAINS link.fixesPattern 
+                OR p.body CONTAINS link.closesPattern 
+                OR p.body CONTAINS link.resolvesPattern
+                OR p.title CONTAINS link.fixesPattern
+           MATCH (i:Issue { repo_id: $repoId, number: link.number })
+           MERGE (p)-[:RESOLVES]->(i)`,
+          { repoId, links: resolveLinks }
+        );
+      }
+
     } finally {
       await session.close();
     }

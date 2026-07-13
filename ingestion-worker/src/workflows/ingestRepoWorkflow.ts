@@ -3,9 +3,16 @@ import { parseSourceFile } from '../parsing/treeSitterParser';
 import { GraphBuilder } from '../graphBuilder/graphBuilder';
 import { RepositoryNode, ParsedFile } from 'shared';
 
+function logMemory(checkpoint: string) {
+  const mem = process.memoryUsage();
+  const toMB = (bytes: number) => (bytes / 1024 / 1024).toFixed(2) + ' MB';
+  console.log(`[memory] ${checkpoint} - rss: ${toMB(mem.rss)}, heapTotal: ${toMB(mem.heapTotal)}, heapUsed: ${toMB(mem.heapUsed)}, external: ${toMB(mem.external)}, arrayBuffers: ${toMB(mem.arrayBuffers || 0)}`);
+}
+
 export async function runIngestion(repoId: string, forceFull = false): Promise<void> {
   const startTime = new Date();
   console.log(`Starting ingestion for repository: ${repoId} at ${startTime.toISOString()}`);
+  logMemory('Start of Ingestion');
   
   const github = new GitHubClient(repoId);
   const builder = new GraphBuilder();
@@ -29,6 +36,7 @@ export async function runIngestion(repoId: string, forceFull = false): Promise<v
     // 2. Fetch File Tree
     console.log(`Fetching file tree for branch: ${repoMeta.default_branch}...`);
     const tree = await github.getFileTree(repoMeta.default_branch);
+    logMemory('After Fetching File Tree');
     
     // Filter for code files (TS/JS/TSX/JSX)
     const codeFiles = tree.filter(f => 
@@ -59,19 +67,26 @@ export async function runIngestion(repoId: string, forceFull = false): Promise<v
         const parsed = await parseSourceFile(file.path, content);
         parsedFiles.push(parsed);
         totalLoc += parsed.loc;
+
+        if (parsedCount % 25 === 0) {
+          logMemory(`After Parsing ${parsedCount} Files`);
+        }
       } catch (err: any) {
         console.error(`Skipped file ${file.path} due to parse error: ${err.message}`);
       }
     }
+    logMemory('After Parsing All Files');
 
     // 4. Write structure nodes (Files, Functions, Classes) to Neo4j
     console.log(`Writing nodes to Neo4j...`);
     await builder.upsertFilesAndStructures(repoId, parsedFiles);
+    logMemory('After Writing Structure Nodes to Neo4j');
 
     // 5. Resolve structural relationships (IMPORTS, CALLS, INHERITS, DEPENDS_ON)
     console.log(`Resolving code relationships...`);
     const unresolvedCount = await builder.buildStructuralRelationships(repoId, parsedFiles);
     console.log(`Code relationships resolved. Unresolved function calls: ${unresolvedCount}`);
+    logMemory('After Resolving Structural Relationships');
 
     // 6. Fetch Git metadata from GitHub API
     console.log(`Fetching commits, PRs, issues and reviews...`);
@@ -85,18 +100,22 @@ export async function runIngestion(repoId: string, forceFull = false): Promise<v
       const reviews = await github.getPRReviews(pr.number);
       reviewsMap[pr.number] = reviews;
     }
+    logMemory('After Fetching Git Metadata');
 
     // 7. Write Git metadata to Neo4j
     console.log(`Writing Git metadata to Neo4j...`);
     await builder.upsertGitHubMetadata(repoId, commits, prs, issues, reviewsMap);
+    logMemory('After Writing Git Metadata');
 
     // 8. Build cross-references (REFERENCES)
     console.log(`Building references from issues and PRs...`);
     await builder.buildTextReferences(repoId, parsedFiles);
+    logMemory('After Building Text References');
 
     // 9. Compute centrality weights (in-degree centrality)
     console.log(`Computing graph metrics...`);
     await builder.computeCentralities(repoId);
+    logMemory('After Computing Centrality Weights');
 
     // 10. Update repository node with ready status
     const latestCommitHash = commits[0]?.sha || '';
@@ -113,6 +132,7 @@ export async function runIngestion(repoId: string, forceFull = false): Promise<v
       ingestion_status: 'ready',
       unresolved_edges_count: unresolvedCount,
     });
+    logMemory('End of Ingestion');
 
     console.log(`Ingestion completed successfully in ${((endTime.getTime() - startTime.getTime()) / 1000).toFixed(2)} seconds!`);
   } catch (error: any) {
