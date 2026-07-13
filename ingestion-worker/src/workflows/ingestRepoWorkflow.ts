@@ -9,6 +9,16 @@ function logMemory(checkpoint: string) {
   console.log(`[memory] ${checkpoint} - rss: ${toMB(mem.rss)}, heapTotal: ${toMB(mem.heapTotal)}, heapUsed: ${toMB(mem.heapUsed)}, external: ${toMB(mem.external)}, arrayBuffers: ${toMB(mem.arrayBuffers || 0)}`);
 }
 
+function triggerGC() {
+  if (global.gc) {
+    try {
+      global.gc();
+    } catch (e) {
+      console.warn('[gc] Failed to run manual garbage collection:', e);
+    }
+  }
+}
+
 export async function runIngestion(repoId: string, forceFull = false): Promise<void> {
   const startTime = new Date();
   console.log(`Starting ingestion for repository: ${repoId} at ${startTime.toISOString()}`);
@@ -69,23 +79,27 @@ export async function runIngestion(repoId: string, forceFull = false): Promise<v
         totalLoc += parsed.loc;
 
         if (parsedCount % 25 === 0) {
+          triggerGC();
           logMemory(`After Parsing ${parsedCount} Files`);
         }
       } catch (err: any) {
         console.error(`Skipped file ${file.path} due to parse error: ${err.message}`);
       }
     }
+    triggerGC();
     logMemory('After Parsing All Files');
 
     // 4. Write structure nodes (Files, Functions, Classes) to Neo4j
     console.log(`Writing nodes to Neo4j...`);
     await builder.upsertFilesAndStructures(repoId, parsedFiles);
+    triggerGC();
     logMemory('After Writing Structure Nodes to Neo4j');
 
     // 5. Resolve structural relationships (IMPORTS, CALLS, INHERITS, DEPENDS_ON)
     console.log(`Resolving code relationships...`);
     const unresolvedCount = await builder.buildStructuralRelationships(repoId, parsedFiles);
     console.log(`Code relationships resolved. Unresolved function calls: ${unresolvedCount}`);
+    triggerGC();
     logMemory('After Resolving Structural Relationships');
 
     // 6. Fetch Git metadata from GitHub API
@@ -100,21 +114,25 @@ export async function runIngestion(repoId: string, forceFull = false): Promise<v
       const reviews = await github.getPRReviews(pr.number);
       reviewsMap[pr.number] = reviews;
     }
+    triggerGC();
     logMemory('After Fetching Git Metadata');
 
     // 7. Write Git metadata to Neo4j
     console.log(`Writing Git metadata to Neo4j...`);
     await builder.upsertGitHubMetadata(repoId, commits, prs, issues, reviewsMap);
+    triggerGC();
     logMemory('After Writing Git Metadata');
 
     // 8. Build cross-references (REFERENCES)
     console.log(`Building references from issues and PRs...`);
     await builder.buildTextReferences(repoId, parsedFiles);
+    triggerGC();
     logMemory('After Building Text References');
 
     // 9. Compute centrality weights (in-degree centrality)
     console.log(`Computing graph metrics...`);
     await builder.computeCentralities(repoId);
+    triggerGC();
     logMemory('After Computing Centrality Weights');
 
     // 10. Update repository node with ready status
@@ -132,6 +150,7 @@ export async function runIngestion(repoId: string, forceFull = false): Promise<v
       ingestion_status: 'ready',
       unresolved_edges_count: unresolvedCount,
     });
+    triggerGC();
     logMemory('End of Ingestion');
 
     console.log(`Ingestion completed successfully in ${((endTime.getTime() - startTime.getTime()) / 1000).toFixed(2)} seconds!`);
